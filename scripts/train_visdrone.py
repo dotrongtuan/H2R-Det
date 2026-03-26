@@ -69,6 +69,15 @@ def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return model.module if isinstance(model, DDP) else model
 
 
+def _dist_barrier(local_rank: int, device: torch.device) -> None:
+    if not dist.is_initialized():
+        return
+    if device.type == "cuda":
+        dist.barrier(device_ids=[local_rank])
+    else:
+        dist.barrier()
+
+
 def _reduce_mean(value: float, device: torch.device) -> float:
     if not dist.is_initialized():
         return value
@@ -235,7 +244,11 @@ def main() -> None:
         base_model = H2RDetector(config).to(device)
         model: torch.nn.Module = base_model
         if is_distributed():
-            model = DDP(base_model, device_ids=[local_rank] if device.type == "cuda" else None)
+            model = DDP(
+                base_model,
+                device_ids=[local_rank] if device.type == "cuda" else None,
+                find_unused_parameters=True,
+            )
 
         criterion = H2RLoss(config)
         optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
@@ -272,9 +285,10 @@ def main() -> None:
         history: list[dict[str, float | int]] = []
 
         for epoch in range(1, args.epochs + 1):
+            if is_main_process():
+                print(json.dumps({"event": "epoch_start", "epoch": epoch, "epochs": args.epochs}))
             train_metrics = train_one_epoch(model, criterion, train_loader, train_sampler, optimizer, scaler, device, config, use_amp, epoch)
-            if dist.is_initialized():
-                dist.barrier()
+            _dist_barrier(local_rank, device)
 
             if is_main_process():
                 assert val_loader is not None
@@ -300,8 +314,7 @@ def main() -> None:
 
                 write_json(run_dir / "history.json", {"history": history, "best_human_ap50": best_human_ap50})
 
-            if dist.is_initialized():
-                dist.barrier()
+            _dist_barrier(local_rank, device)
     finally:
         cleanup_distributed()
 
