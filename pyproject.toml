@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h2r-det"
+version = "0.1.0"
+description = "Sparse human-aware routing detector prototype for tiny-person detection."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "torchvision",
+  "pyyaml",
+  "pillow",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
