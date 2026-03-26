@@ -54,12 +54,18 @@ On the current prototype, this sanity run demonstrated that routing can learn to
 
 ## Train On VisDrone
 
-`--visdrone-yaml` can now be either:
+`--visdrone-yaml` can now be:
 
-- a real `VisDrone.yaml` file, or
-- the dataset directory itself, if your Kaggle dataset does not include a YAML file
+- a real local `VisDrone.yaml` file
+- the dataset directory itself
+- the built-in alias `VisDrone.yaml`
 
-If the YAML path is missing but `--dataset-root` points at a valid VisDrone-style directory, the script will automatically infer the layout.
+If you pass the built-in alias `VisDrone.yaml`, the repo now behaves much closer to Ultralytics:
+
+- it first checks whether VisDrone already exists locally or under Kaggle mounted inputs
+- if not, it downloads the official VisDrone zips from the Ultralytics assets mirror
+- it converts VisDrone annotations into YOLO labels
+- it writes a local cached `VisDrone.yaml`
 
 ```bash
 python scripts/train_visdrone.py ^
@@ -86,7 +92,7 @@ The training script supports `torchrun` distributed training. Example on 2 GPUs:
 
 ```bash
 torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py ^
-  --visdrone-yaml path\\to\\VisDrone.yaml-or-dataset-root ^
+  --visdrone-yaml VisDrone.yaml ^
   --dataset-root path\\to\\visdrone_root ^
   --epochs 5 ^
   --batch-size 4 ^

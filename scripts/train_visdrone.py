@@ -184,7 +184,14 @@ def main() -> None:
         dataset_root = args.dataset_root or None
         use_amp = bool(args.amp and device.type == "cuda")
 
-        parsed = load_visdrone_yaml(args.visdrone_yaml, override_root=dataset_root)
+        if is_distributed():
+            parsed = load_visdrone_yaml(args.visdrone_yaml, override_root=dataset_root) if is_main_process() else None
+            dist.barrier()
+            if not is_main_process():
+                parsed = load_visdrone_yaml(args.visdrone_yaml, override_root=dataset_root)
+            assert parsed is not None
+        else:
+            parsed = load_visdrone_yaml(args.visdrone_yaml, override_root=dataset_root)
         run_name = args.run_name or f"h2r_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         run_dir = ensure_dir(Path(args.output_dir) / run_name)
 

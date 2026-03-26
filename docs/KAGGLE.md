@@ -50,7 +50,11 @@ Run:
 !python scripts/sanity_check.py --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml --steps 1
 ```
 
-If your dataset does not contain `VisDrone.yaml`, you can point `--visdrone-yaml` at the dataset directory itself and still pass `--dataset-root`.
+You now have three options:
+
+1. pass a real YAML file
+2. pass the dataset directory
+3. pass the built-in alias `VisDrone.yaml`
 
 Examples:
 
@@ -63,6 +67,18 @@ or, if no YAML file exists:
 ```bash
 --visdrone-yaml /kaggle/input/visdrone-dataset
 ```
+
+or:
+
+```bash
+--visdrone-yaml VisDrone.yaml
+```
+
+When you use the built-in alias `VisDrone.yaml`, the code will:
+
+- look for an already-mounted VisDrone dataset under `/kaggle/input`
+- if found, use it directly
+- otherwise download and prepare the dataset into a writable cache directory
 
 If you are unsure about the exact Kaggle mount path, inspect it first:
 
@@ -87,7 +103,7 @@ For a real 2-GPU smoke test, use `torchrun` and treat `--batch-size` as per-GPU 
 
 ```bash
 !torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
-  --visdrone-yaml /kaggle/input/visdrone-dataset \
+  --visdrone-yaml VisDrone.yaml \
   --dataset-root /kaggle/input/visdrone-dataset \
   --epochs 1 \
   --batch-size 4 \
@@ -125,8 +141,7 @@ Train:
 
 ```bash
 !torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
-  --visdrone-yaml /kaggle/input/visdrone-dataset \
-  --dataset-root /kaggle/input/visdrone-dataset \
+  --visdrone-yaml VisDrone.yaml \
   --epochs 20 \
   --batch-size 4 \
   --image-size 640 \
@@ -142,10 +157,9 @@ Then evaluate:
 ```bash
 !python scripts/evaluate_visdrone.py \
   --checkpoint /kaggle/working/runs/visdrone_h2r/best.pt \
-  --visdrone-yaml /kaggle/input/visdrone-dataset \
-  --dataset-root /kaggle/input/visdrone-dataset \
+  --visdrone-yaml VisDrone.yaml \
   --split val \
-  --batch-size 8 \
+  --batch-size 4 \
   --device cuda \
   --save-json /kaggle/working/visdrone_eval.json
 ```
@@ -166,5 +180,6 @@ After the notebook finishes, download from `/kaggle/working/`:
 - Start with `--image-size 512` only if `640` is still too heavy.
 - Reduce `--batch-size` before reducing `--max-routes`.
 - Use `--limit-train` and `--limit-val` first to verify paths and labels.
+- If the VisDrone Kaggle dataset is already mounted, `--visdrone-yaml VisDrone.yaml` should now find it automatically.
 - The repo currently reports `AP50 proxy`, not the official VisDrone evaluation server metric.
 - `torchrun` examples here are for Kaggle Linux. Local Windows testing may need different rendezvous settings.
