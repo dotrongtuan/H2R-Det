@@ -9,8 +9,32 @@ import torch
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torchvision.transforms.functional import pil_to_tensor
 
+from .config import DEFAULT_VISDRONE_NAMES
+
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
+COMMON_SPLIT_CANDIDATES = {
+    "train": (
+        "train/images",
+        "train",
+        "VisDrone2019-DET-train/images",
+        "VisDrone2019-DET-train",
+    ),
+    "val": (
+        "val/images",
+        "val",
+        "VisDrone2019-DET-val/images",
+        "VisDrone2019-DET-val",
+    ),
+    "test": (
+        "test/images",
+        "test",
+        "VisDrone2019-DET-test-dev/images",
+        "VisDrone2019-DET-test-dev",
+        "VisDrone2019-DET-test-challenge/images",
+        "VisDrone2019-DET-test-challenge",
+    ),
+}
 
 
 @dataclass(slots=True)
@@ -23,36 +47,102 @@ class VisDroneYaml:
     nc: int
 
 
-def load_visdrone_yaml(path: str | Path, override_root: str | Path | None = None) -> VisDroneYaml:
-    yaml_path = Path(path).expanduser().resolve()
-    payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    root_candidate = override_root if override_root is not None else payload.get("path", yaml_path.parent)
+def _resolve_root(root_candidate: str | Path, anchor: Path) -> Path:
     root = Path(root_candidate).expanduser()
     if not root.is_absolute():
-        root = (yaml_path.parent / root).resolve()
+        root = (anchor / root).resolve()
+    return root
 
-    def resolve_entry(key: str) -> Path | None:
-        value = payload.get(key)
-        if value is None:
-            return None
-        entry = Path(value)
-        if not entry.is_absolute():
-            entry = (root / entry).resolve()
-        return entry
 
-    names = payload.get("names", {})
-    if isinstance(names, dict):
-        ordered_names = tuple(value for _, value in sorted(names.items(), key=lambda item: int(item[0])))
-    else:
-        ordered_names = tuple(names)
+def _resolve_split_entry(root: Path, value: str | Path | None) -> Path | None:
+    if value is None:
+        return None
+    entry = Path(value)
+    if not entry.is_absolute():
+        entry = (root / entry).resolve()
+    return entry
 
+
+def _infer_split(root: Path, split: str) -> Path | None:
+    for candidate in COMMON_SPLIT_CANDIDATES[split]:
+        path = (root / candidate).resolve()
+        if path.exists():
+            return path
+    return None
+
+
+def _kaggle_input_hint() -> str:
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        children = sorted(path.name for path in kaggle_input.iterdir())
+        if children:
+            return f"Available /kaggle/input datasets: {', '.join(children[:12])}"
+        return "/kaggle/input exists but appears empty."
+    return ""
+
+
+def infer_visdrone_layout(root: str | Path) -> VisDroneYaml:
+    root_path = Path(root).expanduser().resolve()
+    if not root_path.exists():
+        hint = _kaggle_input_hint()
+        suffix = f" {hint}" if hint else ""
+        raise FileNotFoundError(f"Dataset root does not exist: {root_path}.{suffix}")
+    train = _infer_split(root_path, "train")
+    val = _infer_split(root_path, "val")
+    test = _infer_split(root_path, "test")
+    if train is None and val is None and test is None:
+        hint = _kaggle_input_hint()
+        suffix = f" {hint}" if hint else ""
+        raise FileNotFoundError(
+            "Could not infer a VisDrone layout under "
+            f"{root_path}. Expected folders such as 'train/images', 'val/images', "
+            "'VisDrone2019-DET-train/images', or 'VisDrone2019-DET-val/images'." + suffix
+        )
     return VisDroneYaml(
-        root=root,
-        train=resolve_entry("train"),
-        val=resolve_entry("val"),
-        test=resolve_entry("test"),
-        names=ordered_names,
-        nc=int(payload.get("nc", len(ordered_names))),
+        root=root_path,
+        train=train,
+        val=val,
+        test=test,
+        names=DEFAULT_VISDRONE_NAMES,
+        nc=len(DEFAULT_VISDRONE_NAMES),
+    )
+
+
+def load_visdrone_yaml(path: str | Path, override_root: str | Path | None = None) -> VisDroneYaml:
+    path_obj = Path(path).expanduser()
+    yaml_path = path_obj.resolve() if path_obj.exists() else path_obj
+
+    if yaml_path.exists() and yaml_path.is_dir():
+        return infer_visdrone_layout(yaml_path)
+
+    if yaml_path.exists() and yaml_path.is_file():
+        payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        root_candidate = override_root if override_root is not None else payload.get("path", yaml_path.parent)
+        root = _resolve_root(root_candidate, yaml_path.parent)
+
+        names = payload.get("names", {})
+        if isinstance(names, dict):
+            ordered_names = tuple(value for _, value in sorted(names.items(), key=lambda item: int(item[0])))
+        else:
+            ordered_names = tuple(names)
+
+        return VisDroneYaml(
+            root=root,
+            train=_resolve_split_entry(root, payload.get("train")),
+            val=_resolve_split_entry(root, payload.get("val")),
+            test=_resolve_split_entry(root, payload.get("test")),
+            names=ordered_names,
+            nc=int(payload.get("nc", len(ordered_names))),
+        )
+
+    if override_root is not None:
+        return infer_visdrone_layout(override_root)
+
+    hint = _kaggle_input_hint()
+    suffix = f" {hint}" if hint else ""
+    raise FileNotFoundError(
+        f"VisDrone YAML or dataset directory was not found: {path_obj}. "
+        "Pass a valid YAML file, or pass the dataset directory itself, or set --dataset-root." + suffix
     )
 
 

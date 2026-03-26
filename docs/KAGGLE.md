@@ -50,7 +50,26 @@ Run:
 !python scripts/sanity_check.py --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml --steps 1
 ```
 
-If your YAML uses a different `path:` root than Kaggle's mounted input path, keep the YAML file but override the root during training with `--dataset-root`.
+If your dataset does not contain `VisDrone.yaml`, you can point `--visdrone-yaml` at the dataset directory itself and still pass `--dataset-root`.
+
+Examples:
+
+```bash
+--visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml
+```
+
+or, if no YAML file exists:
+
+```bash
+--visdrone-yaml /kaggle/input/visdrone-dataset
+```
+
+If you are unsure about the exact Kaggle mount path, inspect it first:
+
+```bash
+!ls /kaggle/input
+!find /kaggle/input -maxdepth 3 | head -200
+```
 
 ## 5. Confirm Both GPUs Are Visible
 
@@ -68,7 +87,7 @@ For a real 2-GPU smoke test, use `torchrun` and treat `--batch-size` as per-GPU 
 
 ```bash
 !torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
-  --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml \
+  --visdrone-yaml /kaggle/input/visdrone-dataset \
   --dataset-root /kaggle/input/visdrone-dataset \
   --epochs 1 \
   --batch-size 4 \
@@ -106,7 +125,7 @@ Train:
 
 ```bash
 !torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
-  --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml \
+  --visdrone-yaml /kaggle/input/visdrone-dataset \
   --dataset-root /kaggle/input/visdrone-dataset \
   --epochs 20 \
   --batch-size 4 \
@@ -123,7 +142,7 @@ Then evaluate:
 ```bash
 !python scripts/evaluate_visdrone.py \
   --checkpoint /kaggle/working/runs/visdrone_h2r/best.pt \
-  --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml \
+  --visdrone-yaml /kaggle/input/visdrone-dataset \
   --dataset-root /kaggle/input/visdrone-dataset \
   --split val \
   --batch-size 8 \

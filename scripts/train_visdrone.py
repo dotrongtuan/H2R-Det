@@ -180,90 +180,90 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     device, rank, world_size, local_rank = init_distributed(args.device)
-    dataset_root = args.dataset_root or None
-    use_amp = bool(args.amp and device.type == "cuda")
+    try:
+        dataset_root = args.dataset_root or None
+        use_amp = bool(args.amp and device.type == "cuda")
 
-    parsed = load_visdrone_yaml(args.visdrone_yaml, override_root=dataset_root)
-    run_name = args.run_name or f"h2r_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_dir = ensure_dir(Path(args.output_dir) / run_name)
+        parsed = load_visdrone_yaml(args.visdrone_yaml, override_root=dataset_root)
+        run_name = args.run_name or f"h2r_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        run_dir = ensure_dir(Path(args.output_dir) / run_name)
 
-    config = H2RConfig(
-        num_classes=parsed.nc,
-        class_names=parsed.names,
-        image_size=args.image_size,
-        patch_size=args.patch_size,
-        max_routes=args.max_routes,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-    )
+        config = H2RConfig(
+            num_classes=parsed.nc,
+            class_names=parsed.names,
+            image_size=args.image_size,
+            patch_size=args.patch_size,
+            max_routes=args.max_routes,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+        )
 
-    train_loader, train_sampler = build_visdrone_dataloader(
-        args.visdrone_yaml,
-        split=args.train_split,
-        image_size=config.image_size,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=True,
-        limit=args.limit_train or None,
-        override_root=dataset_root,
-        distributed=is_distributed(),
-        drop_last=is_distributed(),
-    )
-    val_loader = None
-    if is_main_process():
-        val_loader, _ = build_visdrone_dataloader(
+        train_loader, train_sampler = build_visdrone_dataloader(
             args.visdrone_yaml,
-            split=args.val_split,
+            split=args.train_split,
             image_size=config.image_size,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            shuffle=False,
-            limit=args.limit_val or None,
+            shuffle=True,
+            limit=args.limit_train or None,
             override_root=dataset_root,
-            distributed=False,
-            drop_last=False,
+            distributed=is_distributed(),
+            drop_last=is_distributed(),
         )
-
-    base_model = H2RDetector(config).to(device)
-    model: torch.nn.Module = base_model
-    if is_distributed():
-        model = DDP(base_model, device_ids=[local_rank] if device.type == "cuda" else None)
-
-    criterion = H2RLoss(config)
-    optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
-
-    if is_main_process():
-        write_json(
-            run_dir / "config.json",
-            {
-                "args": vars(args),
-                "model_config": asdict(config),
-                "distributed": {"world_size": world_size, "rank": rank, "local_rank": local_rank},
-                "dataset_summary": {
-                    "root": str(parsed.root),
-                    "train": str(getattr(parsed, args.train_split)),
-                    "val": str(getattr(parsed, args.val_split)),
-                },
-            },
-        )
-        print(
-            json.dumps(
-                {
-                    "device": str(device),
-                    "world_size": world_size,
-                    "per_gpu_batch_size": args.batch_size,
-                    "global_batch_size": args.batch_size * world_size,
-                    "amp": use_amp,
-                    "run_dir": str(run_dir),
-                }
+        val_loader = None
+        if is_main_process():
+            val_loader, _ = build_visdrone_dataloader(
+                args.visdrone_yaml,
+                split=args.val_split,
+                image_size=config.image_size,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                shuffle=False,
+                limit=args.limit_val or None,
+                override_root=dataset_root,
+                distributed=False,
+                drop_last=False,
             )
-        )
 
-    best_human_ap50 = float("-inf")
-    history: list[dict[str, float | int]] = []
+        base_model = H2RDetector(config).to(device)
+        model: torch.nn.Module = base_model
+        if is_distributed():
+            model = DDP(base_model, device_ids=[local_rank] if device.type == "cuda" else None)
 
-    try:
+        criterion = H2RLoss(config)
+        optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+        scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
+
+        if is_main_process():
+            write_json(
+                run_dir / "config.json",
+                {
+                    "args": vars(args),
+                    "model_config": asdict(config),
+                    "distributed": {"world_size": world_size, "rank": rank, "local_rank": local_rank},
+                    "dataset_summary": {
+                        "root": str(parsed.root),
+                        "train": str(getattr(parsed, args.train_split)),
+                        "val": str(getattr(parsed, args.val_split)),
+                    },
+                },
+            )
+            print(
+                json.dumps(
+                    {
+                        "device": str(device),
+                        "world_size": world_size,
+                        "per_gpu_batch_size": args.batch_size,
+                        "global_batch_size": args.batch_size * world_size,
+                        "amp": use_amp,
+                        "run_dir": str(run_dir),
+                    }
+                )
+            )
+
+        best_human_ap50 = float("-inf")
+        history: list[dict[str, float | int]] = []
+
         for epoch in range(1, args.epochs + 1):
             train_metrics = train_one_epoch(model, criterion, train_loader, train_sampler, optimizer, scaler, device, config, use_amp, epoch)
             if dist.is_initialized():

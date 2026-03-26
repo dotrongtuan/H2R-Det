@@ -54,6 +54,13 @@ On the current prototype, this sanity run demonstrated that routing can learn to
 
 ## Train On VisDrone
 
+`--visdrone-yaml` can now be either:
+
+- a real `VisDrone.yaml` file, or
+- the dataset directory itself, if your Kaggle dataset does not include a YAML file
+
+If the YAML path is missing but `--dataset-root` points at a valid VisDrone-style directory, the script will automatically infer the layout.
+
 ```bash
 python scripts/train_visdrone.py ^
   --visdrone-yaml path\\to\\VisDrone.yaml ^
@@ -79,7 +86,7 @@ The training script supports `torchrun` distributed training. Example on 2 GPUs:
 
 ```bash
 torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py ^
-  --visdrone-yaml path\\to\\VisDrone.yaml ^
+  --visdrone-yaml path\\to\\VisDrone.yaml-or-dataset-root ^
   --dataset-root path\\to\\visdrone_root ^
   --epochs 5 ^
   --batch-size 4 ^
