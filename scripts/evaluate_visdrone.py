@@ -49,7 +49,7 @@ def main() -> None:
     model = H2RDetector(config).to(device)
     model.load_state_dict(checkpoint["model"])
     criterion = H2RLoss(config)
-    loader = build_visdrone_dataloader(
+    loader, _ = build_visdrone_dataloader(
         args.visdrone_yaml,
         split=args.split,
         image_size=config.image_size,

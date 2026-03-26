@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 
 from .config import H2RConfig
 
@@ -61,3 +63,47 @@ def checkpoint_payload(
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
     return payload
+
+
+def get_env_rank() -> int:
+    return int(os.environ.get("RANK", "0"))
+
+
+def get_env_world_size() -> int:
+    return int(os.environ.get("WORLD_SIZE", "1"))
+
+
+def get_env_local_rank() -> int:
+    return int(os.environ.get("LOCAL_RANK", "0"))
+
+
+def is_distributed() -> bool:
+    return get_env_world_size() > 1
+
+
+def is_main_process() -> bool:
+    return get_env_rank() == 0
+
+
+def init_distributed(device_preference: str) -> tuple[torch.device, int, int, int]:
+    world_size = get_env_world_size()
+    rank = get_env_rank()
+    local_rank = get_env_local_rank()
+
+    if world_size > 1 and not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() and "cuda" in device_preference else "gloo"
+        dist.init_process_group(backend=backend)
+
+    if world_size > 1 and torch.cuda.is_available() and "cuda" in device_preference:
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+    else:
+        device = torch.device(device_preference)
+
+    return device, rank, world_size, local_rank
+
+
+def cleanup_distributed() -> None:
+    if dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()

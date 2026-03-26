@@ -71,6 +71,25 @@ Useful options:
 - `--limit-train 200` for a fast smoke test
 - `--limit-val 100` for a quick validation pass
 - `--output-dir runs` to control checkpoint output
+- `--batch-size` is per process; under multi-GPU the global batch is `batch_size * world_size`
+
+### Multi-GPU
+
+The training script supports `torchrun` distributed training. Example on 2 GPUs:
+
+```bash
+torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py ^
+  --visdrone-yaml path\\to\\VisDrone.yaml ^
+  --dataset-root path\\to\\visdrone_root ^
+  --epochs 5 ^
+  --batch-size 4 ^
+  --image-size 640 ^
+  --patch-size 96 ^
+  --max-routes 12 ^
+  --device cuda ^
+  --output-dir runs ^
+  --run-name visdrone_h2r_ddp
+```
 
 Artifacts are written to `runs/<run_name>/`:
 

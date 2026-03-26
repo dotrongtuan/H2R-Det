@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torchvision.transforms.functional import pil_to_tensor
 
 
@@ -152,17 +152,24 @@ def build_visdrone_dataloader(
     shuffle: bool = False,
     limit: int | None = None,
     override_root: str | Path | None = None,
-) -> DataLoader:
+    distributed: bool = False,
+    drop_last: bool = False,
+) -> tuple[DataLoader, DistributedSampler | None]:
     parsed = load_visdrone_yaml(yaml_path, override_root=override_root)
     split_root = getattr(parsed, split, None)
     if split_root is None:
         raise ValueError(f"Split '{split}' is not defined in {yaml_path}.")
     dataset = VisDroneYoloDataset(split_root, image_size=image_size, limit=limit)
-    return DataLoader(
+    sampler = DistributedSampler(dataset, shuffle=shuffle) if distributed else None
+    loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle and sampler is None,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=num_workers > 0,
+        drop_last=drop_last,
         collate_fn=collate_visdrone,
     )
+    return loader, sampler

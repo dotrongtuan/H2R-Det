@@ -52,10 +52,22 @@ Run:
 
 If your YAML uses a different `path:` root than Kaggle's mounted input path, keep the YAML file but override the root during training with `--dataset-root`.
 
-## 5. Fast Smoke Test On A Small Subset
+## 5. Confirm Both GPUs Are Visible
+
+Run:
 
 ```bash
-!python scripts/train_visdrone.py \
+!python -c "import torch; print('cuda', torch.cuda.is_available()); print('num_gpus', torch.cuda.device_count())"
+```
+
+On your setup, you want to see `num_gpus 2`.
+
+## 6. Fast Smoke Test On A Small Subset
+
+For a real 2-GPU smoke test, use `torchrun` and treat `--batch-size` as per-GPU batch size:
+
+```bash
+!torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
   --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml \
   --dataset-root /kaggle/input/visdrone-dataset \
   --epochs 1 \
@@ -73,18 +85,31 @@ If your YAML uses a different `path:` root than Kaggle's mounted input path, kee
 This confirms:
 
 - dataset loading works
-- training loop runs
+- distributed training on both GPUs runs
 - validation works
 - checkpoints are written to `/kaggle/working/runs/smoke_test`
 
-## 6. Full-ish Validation Run
+If this goes out of memory, reduce `--batch-size` from `4` to `2` before touching the model settings.
+
+## 7. Full Pipeline Run On 2x T4
+
+Recommended starting point for 2x T4:
+
+- `--batch-size 4` per GPU
+- global batch size = `8`
+- `--image-size 640`
+- `--patch-size 96`
+- `--max-routes 12`
+- `--amp` enabled by default
+
+Train:
 
 ```bash
-!python scripts/train_visdrone.py \
+!torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
   --visdrone-yaml /kaggle/input/visdrone-dataset/VisDrone.yaml \
   --dataset-root /kaggle/input/visdrone-dataset \
-  --epochs 5 \
-  --batch-size 8 \
+  --epochs 20 \
+  --batch-size 4 \
   --image-size 640 \
   --patch-size 96 \
   --max-routes 12 \
@@ -106,7 +131,7 @@ Then evaluate:
   --save-json /kaggle/working/visdrone_eval.json
 ```
 
-## 7. Download Artifacts
+## 8. Download Artifacts
 
 After the notebook finishes, download from `/kaggle/working/`:
 
@@ -117,7 +142,10 @@ After the notebook finishes, download from `/kaggle/working/`:
 
 ## Practical Notes
 
-- Start with `--image-size 512` if GPU memory is tight.
+- On 2x T4, start with `--batch-size 4` per GPU at `640`.
+- If you hit OOM, move to `--batch-size 2` per GPU before reducing `--image-size`.
+- Start with `--image-size 512` only if `640` is still too heavy.
 - Reduce `--batch-size` before reducing `--max-routes`.
 - Use `--limit-train` and `--limit-val` first to verify paths and labels.
 - The repo currently reports `AP50 proxy`, not the official VisDrone evaluation server metric.
+- `torchrun` examples here are for Kaggle Linux. Local Windows testing may need different rendezvous settings.
