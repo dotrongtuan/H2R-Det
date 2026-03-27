@@ -9,10 +9,16 @@ from .config import H2RConfig
 from .model import RouteBundle
 
 
-def _cxcywh_to_xyxy(boxes: torch.Tensor, image_size: tuple[int, int]) -> torch.Tensor:
+def _decode_scout_boxes(
+    boxes: torch.Tensor,
+    xs: torch.Tensor,
+    ys: torch.Tensor,
+    image_size: tuple[int, int],
+    stride: int,
+) -> torch.Tensor:
     image_h, image_w = image_size
-    cx = boxes[:, 0] * image_w
-    cy = boxes[:, 1] * image_h
+    cx = (xs.float() + boxes[:, 0]) * stride
+    cy = (ys.float() + boxes[:, 1]) * stride
     w = boxes[:, 2] * image_w
     h = boxes[:, 3] * image_h
     x1 = (cx - w / 2.0).clamp(0.0, image_w - 1.0)
@@ -46,6 +52,11 @@ def predicted_route_subset(routes: RouteBundle) -> RouteBundle:
         teacher_count=0,
         per_image_counts=routes.per_image_counts,
     )
+
+
+def _local_peak_mask(scores: torch.Tensor, kernel: int) -> torch.Tensor:
+    pooled = torch.nn.functional.max_pool2d(scores, kernel_size=kernel, stride=1, padding=kernel // 2)
+    return scores.eq(pooled)
 
 
 def routing_recall(config: H2RConfig, routes: RouteBundle, targets: list[dict[str, torch.Tensor]]) -> float:
@@ -106,26 +117,34 @@ def decode_predictions(
     human_rois = routes.rois
     human_objectness = torch.sigmoid(refine["objectness_logits"]).squeeze(1) if refine["objectness_logits"].numel() else None
     human_probs = torch.softmax(refine["class_logits"], dim=1) if refine["class_logits"].numel() else None
+    human_route_scores = routes.scores if routes.scores.numel() else None
+    human_ids = torch.tensor(config.human_class_ids, device=class_logits.device, dtype=torch.long)
 
     for batch_idx in range(batch_size):
-        scores = torch.sigmoid(class_logits[batch_idx]).flatten()
-        candidate_k = min(topk, scores.numel())
-        top_scores, top_indices = torch.topk(scores, k=candidate_k)
+        class_probs = torch.sigmoid(class_logits[batch_idx])
+        best_scores, best_labels = class_probs.max(dim=0)
+        peak_mask = _local_peak_mask(best_scores[None, None], config.scout_decode_kernel).squeeze(0).squeeze(0)
+        filtered_scores = best_scores.masked_fill(~peak_mask, -1.0)
+        candidate_k = min(topk, filtered_scores.numel())
+        top_scores, top_indices = torch.topk(filtered_scores.flatten(), k=candidate_k)
+        label_grid = best_labels.flatten()
+        candidate_labels = label_grid[top_indices]
+        human_mask = torch.isin(candidate_labels, human_ids)
         keep = top_scores >= scout_score_thresh
+        keep = keep & (~human_mask | (top_scores >= config.human_scout_score_thresh))
         top_scores = top_scores[keep]
         top_indices = top_indices[keep]
+        candidate_labels = candidate_labels[keep]
         scout_det_boxes = class_logits.new_zeros((0, 4))
         scout_det_scores = class_logits.new_zeros((0,))
         scout_det_labels = class_logits.new_zeros((0,), dtype=torch.long)
         if top_scores.numel():
-            class_ids = torch.div(top_indices, height * width, rounding_mode="floor")
-            spatial = top_indices % (height * width)
-            ys = torch.div(spatial, width, rounding_mode="floor")
-            xs = spatial % width
+            ys = torch.div(top_indices, width, rounding_mode="floor")
+            xs = top_indices % width
             rel_boxes = scout_boxes[batch_idx, :, ys, xs].permute(1, 0)
-            scout_det_boxes = _cxcywh_to_xyxy(rel_boxes, image_size)
+            scout_det_boxes = _decode_scout_boxes(rel_boxes, xs, ys, image_size, stride=config.scout_stride)
             scout_det_scores = top_scores
-            scout_det_labels = class_ids.long()
+            scout_det_labels = candidate_labels.long()
 
         refine_det_boxes = class_logits.new_zeros((0, 4))
         refine_det_scores = class_logits.new_zeros((0,))
@@ -136,20 +155,24 @@ def decode_predictions(
                 route_indices = torch.nonzero(route_mask, as_tuple=False).squeeze(1)
                 obj = human_objectness[route_indices]
                 probs = human_probs[route_indices]
-                conf, subclass_idx = (obj[:, None] * probs).max(dim=1)
+                route_scores = human_route_scores[route_indices].pow(config.refine_route_score_power)
+                conf, subclass_idx = (obj[:, None] * probs * route_scores[:, None]).max(dim=1)
                 keep_refine = conf >= refine_score_thresh
                 if keep_refine.any():
                     kept_indices = route_indices[keep_refine]
                     refine_det_boxes = _roi_relative_cxcywh_to_xyxy(refine["box"][kept_indices], human_rois[kept_indices, 1:])
                     refine_det_scores = conf[keep_refine]
-                    human_ids = torch.tensor(config.human_class_ids, device=class_logits.device, dtype=torch.long)
                     refine_det_labels = human_ids[subclass_idx[keep_refine]]
 
         all_boxes = torch.cat([scout_det_boxes, refine_det_boxes], dim=0)
         all_scores = torch.cat([scout_det_scores, refine_det_scores], dim=0)
         all_labels = torch.cat([scout_det_labels, refine_det_labels], dim=0)
         if all_boxes.numel():
-            keep_idx = batched_nms(all_boxes, all_scores, all_labels, nms_iou)
+            nms_labels = all_labels.clone()
+            human_label_mask = torch.isin(nms_labels, human_ids)
+            if human_label_mask.any():
+                nms_labels[human_label_mask] = human_ids[0]
+            keep_idx = batched_nms(all_boxes, all_scores, nms_labels, nms_iou)
             all_boxes = all_boxes[keep_idx]
             all_scores = all_scores[keep_idx]
             all_labels = all_labels[keep_idx]

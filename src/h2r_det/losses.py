@@ -36,12 +36,29 @@ def _draw_gaussian(heatmap: torch.Tensor, center_x: int, center_y: int, radius: 
             heatmap[y, x] = torch.maximum(heatmap[y, x], value)
 
 
-def _normalize_box_xyxy(box: torch.Tensor, image_w: int, image_h: int) -> torch.Tensor:
-    cx = ((box[0] + box[2]) / 2.0) / image_w
-    cy = ((box[1] + box[3]) / 2.0) / image_h
+def _fill_window(target: torch.Tensor, mask: torch.Tensor, center_x: int, center_y: int, radius: int, value: torch.Tensor) -> None:
+    height = target.shape[-2]
+    width = target.shape[-1]
+    x_min = max(0, center_x - radius)
+    x_max = min(width - 1, center_x + radius)
+    y_min = max(0, center_y - radius)
+    y_max = min(height - 1, center_y + radius)
+    if x_min > x_max or y_min > y_max:
+        return
+    while value.ndim < target.ndim:
+        value = value.unsqueeze(-1)
+    target[..., y_min : y_max + 1, x_min : x_max + 1] = value
+    mask[..., y_min : y_max + 1, x_min : x_max + 1] = 1.0
+
+
+def _encode_scout_box(box: torch.Tensor, grid_x: int, grid_y: int, stride: int, image_w: int, image_h: int) -> torch.Tensor:
+    cx = (box[0] + box[2]) / 2.0
+    cy = (box[1] + box[3]) / 2.0
+    offset_x = cx / stride - grid_x
+    offset_y = cy / stride - grid_y
     w = (box[2] - box[0]) / image_w
     h = (box[3] - box[1]) / image_h
-    return torch.stack([cx, cy, w, h])
+    return torch.stack([offset_x, offset_y, w, h]).clamp(0.0, 1.0)
 
 
 def build_router_targets(
@@ -69,14 +86,24 @@ def build_router_targets(
             cy = ((box[1] + box[3]) / 2.0) / config.route_stride
             grid_x = int(cx.clamp(0, width - 1).item())
             grid_y = int(cy.clamp(0, height - 1).item())
-            radius = _gaussian_radius(float(box[2] - box[0]), float(box[3] - box[1]), config.route_stride)
+            radius = max(
+                config.route_positive_radius,
+                _gaussian_radius(float(box[2] - box[0]), float(box[3] - box[1]), config.route_stride),
+            )
             _draw_gaussian(heatmap[batch_idx, 0], grid_x, grid_y, radius)
             side = max(float(box[2] - box[0]), float(box[3] - box[1])) * config.route_teacher_pad
             side = min(max(side, config.route_min_size), config.route_max_size)
-            scale_targets[batch_idx, 0, grid_y, grid_x] = (side - config.route_min_size) / (
-                config.route_max_size - config.route_min_size
+            scale_value = heatmap.new_tensor(
+                (side - config.route_min_size) / (config.route_max_size - config.route_min_size)
             )
-            scale_mask[batch_idx, 0, grid_y, grid_x] = 1.0
+            _fill_window(
+                scale_targets[batch_idx : batch_idx + 1],
+                scale_mask[batch_idx : batch_idx + 1],
+                grid_x,
+                grid_y,
+                radius=max(0, radius - 1),
+                value=scale_value.view(1, 1),
+            )
 
     return heatmap, scale_targets, scale_mask
 
@@ -105,8 +132,19 @@ def build_scout_targets(
             cy = ((box[1] + box[3]) / 2.0) / config.scout_stride
             grid_x = int(cx.clamp(0, width - 1).item())
             grid_y = int(cy.clamp(0, height - 1).item())
-            class_targets[batch_idx, label, grid_y, grid_x] = 1.0
-            box_targets[batch_idx, :, grid_y, grid_x] = _normalize_box_xyxy(box, image_w, image_h)
+            radius = max(
+                config.scout_positive_radius,
+                _gaussian_radius(float(box[2] - box[0]), float(box[3] - box[1]), config.scout_stride),
+            )
+            _draw_gaussian(class_targets[batch_idx, label], grid_x, grid_y, radius)
+            box_targets[batch_idx, :, grid_y, grid_x] = _encode_scout_box(
+                box,
+                grid_x=grid_x,
+                grid_y=grid_y,
+                stride=config.scout_stride,
+                image_w=image_w,
+                image_h=image_h,
+            )
             box_mask[batch_idx, :, grid_y, grid_x] = 1.0
     return class_targets, box_targets, box_mask
 

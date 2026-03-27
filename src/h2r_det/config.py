@@ -31,10 +31,14 @@ class H2RConfig:
     route_nms_kernel: int = 5
     route_teacher_pad: float = 1.75
     route_score_power: float = 1.0
+    refine_route_score_power: float = 0.5
     backbone_channels: tuple[int, int, int, int] = (32, 64, 128, 192)
     fpn_channels: int = 96
     refine_channels: tuple[int, int, int] = (64, 96, 128)
     scout_stride: int = 8
+    scout_positive_radius: int = 1
+    scout_decode_kernel: int = 3
+    human_scout_score_thresh: float = 0.2
     refine_dropout: float = 0.05
     max_humans_per_image: int = 16
     route_positive_radius: int = 2
