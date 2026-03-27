@@ -24,13 +24,14 @@ class H2RConfig:
     human_class_ids: tuple[int, int] = (0, 1)
     image_size: int = 640
     patch_size: int = 96
-    max_routes: int = 16
+    max_routes: int = 24
     route_stride: int = 4
     route_min_size: int = 32
     route_max_size: int = 192
-    route_nms_kernel: int = 5
+    route_nms_kernel: int = 3
     route_teacher_pad: float = 1.75
     route_score_power: float = 1.0
+    use_route_uncertainty: bool = False
     refine_route_score_power: float = 0.5
     backbone_channels: tuple[int, int, int, int] = (32, 64, 128, 192)
     fpn_channels: int = 96
@@ -40,7 +41,7 @@ class H2RConfig:
     scout_decode_kernel: int = 3
     human_scout_score_thresh: float = 0.2
     refine_dropout: float = 0.05
-    max_humans_per_image: int = 16
+    max_humans_per_image: int = 32
     route_positive_radius: int = 2
     route_loss_weight: float = 1.0
     scale_loss_weight: float = 0.25

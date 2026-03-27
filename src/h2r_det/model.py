@@ -286,8 +286,12 @@ class HumanAwareRouter(nn.Module):
         teacher_targets: list[dict[str, torch.Tensor]] | None = None,
     ) -> RouteBundle:
         score_map = torch.sigmoid(route_logits).pow(self.config.route_score_power)
-        score_map = score_map * (1.0 - 0.35 * torch.sigmoid(uncertainty_logits))
-        bundle = self._build_rois(score_map, scale_logits, uncertainty_logits, image_size)
+        if self.config.use_route_uncertainty:
+            score_map = score_map * (1.0 - 0.35 * torch.sigmoid(uncertainty_logits))
+            roi_uncertainty = uncertainty_logits
+        else:
+            roi_uncertainty = torch.zeros_like(uncertainty_logits)
+        bundle = self._build_rois(score_map, scale_logits, roi_uncertainty, image_size)
         rois = bundle.rois
         scores = bundle.scores
 

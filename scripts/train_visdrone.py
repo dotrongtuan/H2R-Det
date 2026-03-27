@@ -132,6 +132,7 @@ def train_one_epoch(
     total_loss = 0.0
     total_route_recall = 0.0
     total_area = 0.0
+    total_routes_per_image = 0.0
     batches = 0
     skipped_batches = 0
 
@@ -169,6 +170,7 @@ def train_one_epoch(
         total_loss += float(losses["total"].item())
         total_route_recall += routing_recall(config, outputs["routes"], targets)
         total_area += mean_routed_area_fraction(outputs["routes"], (config.image_size, config.image_size))
+        total_routes_per_image += outputs["routes"].predicted_count / max(1, images.shape[0])
         batches += 1
 
         if is_main_process() and (batch_idx == 1 or batch_idx % log_interval == 0):
@@ -180,6 +182,7 @@ def train_one_epoch(
                         "batch": batch_idx,
                         "loss": float(losses["total"].item()),
                         "grad_norm": float(torch.as_tensor(grad_norm).item()),
+                        "routes_per_image": float(outputs["routes"].predicted_count / max(1, images.shape[0])),
                         "skipped_batches": skipped_batches,
                     }
                 )
@@ -189,6 +192,7 @@ def train_one_epoch(
         "loss": total_loss / max(1, batches),
         "route_recall": total_route_recall / max(1, batches),
         "routed_area": total_area / max(1, batches),
+        "routes_per_image": total_routes_per_image / max(1, batches),
         "skipped_batches": float(skipped_batches),
     }
     return {key: _reduce_mean(value, device) for key, value in stats.items()}
@@ -207,6 +211,7 @@ def evaluate(
     total_loss = 0.0
     total_route_recall = 0.0
     total_area = 0.0
+    total_routes_per_image = 0.0
     batches = 0
     predictions_all: list[dict[str, torch.Tensor]] = []
     targets_all: list[dict[str, torch.Tensor]] = []
@@ -236,6 +241,7 @@ def evaluate(
         total_loss += float(losses["total"].item())
         total_route_recall += routing_recall(config, outputs["routes"], targets)
         total_area += mean_routed_area_fraction(outputs["routes"], (config.image_size, config.image_size))
+        total_routes_per_image += outputs["routes"].predicted_count / max(1, images.shape[0])
         batches += 1
 
     metrics = compute_map50(predictions_all, targets_all, config.num_classes)
@@ -244,6 +250,7 @@ def evaluate(
         "loss": total_loss / max(1, batches),
         "route_recall": total_route_recall / max(1, batches),
         "routed_area": total_area / max(1, batches),
+        "routes_per_image": total_routes_per_image / max(1, batches),
         "map50": float(metrics["map50"]),
         "human_ap50": float(human_ap),
     }
