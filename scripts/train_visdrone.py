@@ -158,6 +158,7 @@ def train_one_epoch(
         grad_norm = clip_grad_norm_(model.parameters(), max_norm=config.grad_clip_norm)
         if not torch.isfinite(torch.as_tensor(grad_norm)):
             optimizer.zero_grad(set_to_none=True)
+            scaler.update()
             skipped_batches += 1
             continue
         scaler.step(optimizer)
