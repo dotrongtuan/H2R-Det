@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import random
-from dataclasses import asdict
+from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,44 @@ def checkpoint_payload(
     return payload
 
 
+def promote_fp32_tree(value: Any) -> Any:
+    if torch.is_tensor(value):
+        return value.float() if value.is_floating_point() else value
+    if isinstance(value, dict):
+        return {key: promote_fp32_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [promote_fp32_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(promote_fp32_tree(item) for item in value)
+    if is_dataclass(value) and not isinstance(value, type):
+        kwargs = {field.name: promote_fp32_tree(getattr(value, field.name)) for field in fields(value)}
+        return type(value)(**kwargs)
+    return value
+
+
+class ModelEMA:
+    def __init__(self, model: torch.nn.Module, decay: float = 0.999):
+        self.decay = decay
+        self.ema = copy.deepcopy(model).eval()
+        for parameter in self.ema.parameters():
+            parameter.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module) -> None:
+        source_state = model.state_dict()
+        target_state = self.ema.state_dict()
+        for key, target_value in target_state.items():
+            source_value = source_state[key].detach()
+            if not source_value.is_floating_point():
+                target_value.copy_(source_value)
+            else:
+                target_value.mul_(self.decay).add_(source_value, alpha=1.0 - self.decay)
+
+    def to(self, device: torch.device) -> "ModelEMA":
+        self.ema.to(device)
+        return self
+
+
 def get_env_rank() -> int:
     return int(os.environ.get("RANK", "0"))
 
@@ -92,7 +131,10 @@ def init_distributed(device_preference: str) -> tuple[torch.device, int, int, in
 
     if world_size > 1 and not dist.is_initialized():
         backend = "nccl" if torch.cuda.is_available() and "cuda" in device_preference else "gloo"
-        dist.init_process_group(backend=backend)
+        kwargs: dict[str, Any] = {}
+        if backend == "nccl":
+            kwargs["device_id"] = local_rank
+        dist.init_process_group(backend=backend, **kwargs)
 
     if world_size > 1 and torch.cuda.is_available() and "cuda" in device_preference:
         torch.cuda.set_device(local_rank)

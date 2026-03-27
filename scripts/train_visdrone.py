@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import asdict
 from datetime import datetime
@@ -10,7 +11,9 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -19,6 +22,7 @@ if str(SRC) not in sys.path:
 
 from h2r_det import H2RConfig, H2RDetector, H2RLoss, compute_map50, decode_predictions, mean_routed_area_fraction, routing_recall
 from h2r_det.utils import (
+    ModelEMA,
     checkpoint_payload,
     cleanup_distributed,
     ensure_dir,
@@ -27,6 +31,7 @@ from h2r_det.utils import (
     is_distributed,
     is_main_process,
     move_targets_to_device,
+    promote_fp32_tree,
     set_seed,
     write_json,
 )
@@ -34,17 +39,18 @@ from h2r_det.visdrone import build_visdrone_dataloader, load_visdrone_yaml
 
 
 def parse_args() -> argparse.Namespace:
+    defaults = H2RConfig()
     parser = argparse.ArgumentParser(description="Train H2R-Det on a VisDrone YAML split.")
     parser.add_argument("--visdrone-yaml", type=str, required=True)
     parser.add_argument("--dataset-root", type=str, default="")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=4, help="Per-process batch size. Global batch = batch_size * world_size.")
     parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--image-size", type=int, default=640)
-    parser.add_argument("--patch-size", type=int, default=96)
-    parser.add_argument("--max-routes", type=int, default=12)
-    parser.add_argument("--learning-rate", type=float, default=2e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--image-size", type=int, default=defaults.image_size)
+    parser.add_argument("--patch-size", type=int, default=defaults.patch_size)
+    parser.add_argument("--max-routes", type=int, default=defaults.max_routes)
+    parser.add_argument("--learning-rate", type=float, default=defaults.learning_rate)
+    parser.add_argument("--weight-decay", type=float, default=defaults.weight_decay)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--train-split", type=str, default="train")
@@ -53,11 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-val", type=int, default=0)
     parser.add_argument("--output-dir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default="")
-    parser.add_argument("--scout-score-thresh", type=float, default=0.25)
-    parser.add_argument("--refine-score-thresh", type=float, default=0.25)
+    parser.add_argument("--scout-score-thresh", type=float, default=0.05)
+    parser.add_argument("--refine-score-thresh", type=float, default=0.1)
     parser.add_argument("--nms-iou", type=float, default=0.5)
-    parser.add_argument("--topk", type=int, default=150)
+    parser.add_argument("--topk", type=int, default=300)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True, help="Enable AMP on CUDA.")
+    parser.add_argument("--log-interval", type=int, default=100)
     return parser.parse_args()
 
 
@@ -87,6 +94,23 @@ def _reduce_mean(value: float, device: torch.device) -> float:
     return float(tensor.item())
 
 
+def _build_scheduler(optimizer: AdamW, epochs: int, config: H2RConfig) -> LambdaLR:
+    warmup_epochs = max(0, config.warmup_epochs)
+    min_lr_ratio = float(config.min_lr_ratio)
+
+    def lr_lambda(epoch_idx: int) -> float:
+        if warmup_epochs > 0 and epoch_idx < warmup_epochs:
+            return max(1e-3, float(epoch_idx + 1) / float(warmup_epochs))
+        if epochs <= warmup_epochs:
+            return 1.0
+        progress = float(epoch_idx - warmup_epochs) / float(max(1, epochs - warmup_epochs))
+        progress = min(max(progress, 0.0), 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+    return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     criterion: H2RLoss,
@@ -98,6 +122,8 @@ def train_one_epoch(
     config: H2RConfig,
     use_amp: bool,
     epoch: int,
+    log_interval: int,
+    ema: ModelEMA | None,
 ) -> dict[str, float]:
     model.train()
     if sampler is not None:
@@ -107,29 +133,62 @@ def train_one_epoch(
     total_route_recall = 0.0
     total_area = 0.0
     batches = 0
+    skipped_batches = 0
 
-    for images, targets in loader:
+    for batch_idx, (images, targets) in enumerate(loader, start=1):
         images = images.to(device, non_blocking=True)
         targets = move_targets_to_device(targets, device)
 
         with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             outputs = model(images, teacher_targets=human_only_targets(config, targets))
-            losses = criterion(outputs, targets, image_size=(config.image_size, config.image_size))
+        losses = criterion(
+            promote_fp32_tree(outputs),
+            targets,
+            image_size=(config.image_size, config.image_size),
+        )
+
+        if not torch.isfinite(losses["total"]):
+            optimizer.zero_grad(set_to_none=True)
+            skipped_batches += 1
+            continue
 
         optimizer.zero_grad(set_to_none=True)
         scaler.scale(losses["total"]).backward()
+        scaler.unscale_(optimizer)
+        grad_norm = clip_grad_norm_(model.parameters(), max_norm=config.grad_clip_norm)
+        if not torch.isfinite(torch.as_tensor(grad_norm)):
+            optimizer.zero_grad(set_to_none=True)
+            skipped_batches += 1
+            continue
         scaler.step(optimizer)
         scaler.update()
+        if ema is not None:
+            ema.update(_unwrap_model(model))
 
         total_loss += float(losses["total"].item())
         total_route_recall += routing_recall(config, outputs["routes"], targets)
         total_area += mean_routed_area_fraction(outputs["routes"], (config.image_size, config.image_size))
         batches += 1
 
+        if is_main_process() and (batch_idx == 1 or batch_idx % log_interval == 0):
+            print(
+                json.dumps(
+                    {
+                        "event": "train_batch",
+                        "epoch": epoch,
+                        "batch": batch_idx,
+                        "loss": float(losses["total"].item()),
+                        "grad_norm": float(torch.as_tensor(grad_norm).item()),
+                        "skipped_batches": skipped_batches,
+                    }
+                )
+            )
+
     stats = {
         "loss": total_loss / max(1, batches),
         "route_recall": total_route_recall / max(1, batches),
         "routed_area": total_area / max(1, batches),
+        "skipped_batches": float(skipped_batches),
     }
     return {key: _reduce_mean(value, device) for key, value in stats.items()}
 
@@ -156,10 +215,14 @@ def evaluate(
         targets = move_targets_to_device(targets, device)
         with torch.amp.autocast(device_type=device.type, enabled=args.amp and device.type == "cuda"):
             outputs = model(images)
-            losses = criterion(outputs, targets, image_size=(config.image_size, config.image_size))
+        losses = criterion(
+            promote_fp32_tree(outputs),
+            targets,
+            image_size=(config.image_size, config.image_size),
+        )
 
         predictions = decode_predictions(
-            outputs,
+            promote_fp32_tree(outputs),
             config,
             image_size=(config.image_size, config.image_size),
             scout_score_thresh=args.scout_score_thresh,
@@ -253,6 +316,8 @@ def main() -> None:
         criterion = H2RLoss(config)
         optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
         scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
+        scheduler = _build_scheduler(optimizer, args.epochs, config)
+        ema = ModelEMA(_unwrap_model(model), decay=config.ema_decay) if is_main_process() else None
 
         if is_main_process():
             write_json(
@@ -276,6 +341,7 @@ def main() -> None:
                         "per_gpu_batch_size": args.batch_size,
                         "global_batch_size": args.batch_size * world_size,
                         "amp": use_amp,
+                        "base_lr": config.learning_rate,
                         "run_dir": str(run_dir),
                     }
                 )
@@ -287,28 +353,45 @@ def main() -> None:
         for epoch in range(1, args.epochs + 1):
             if is_main_process():
                 print(json.dumps({"event": "epoch_start", "epoch": epoch, "epochs": args.epochs}))
-            train_metrics = train_one_epoch(model, criterion, train_loader, train_sampler, optimizer, scaler, device, config, use_amp, epoch)
+            train_metrics = train_one_epoch(
+                model,
+                criterion,
+                train_loader,
+                train_sampler,
+                optimizer,
+                scaler,
+                device,
+                config,
+                use_amp,
+                epoch,
+                args.log_interval,
+                ema,
+            )
+            scheduler.step()
             _dist_barrier(local_rank, device)
 
             if is_main_process():
                 assert val_loader is not None
-                val_metrics = evaluate(_unwrap_model(model), criterion, val_loader, device, config, args)
+                eval_model = ema.ema if ema is not None else _unwrap_model(model)
+                val_metrics = evaluate(eval_model, criterion, val_loader, device, config, args)
                 row = {
                     "epoch": epoch,
+                    "lr": float(optimizer.param_groups[0]["lr"]),
                     **{f"train_{k}": v for k, v in train_metrics.items()},
                     **{f"val_{k}": v for k, v in val_metrics.items()},
                 }
                 history.append(row)
                 print(json.dumps(row))
 
+                model_to_save = ema.ema if ema is not None else _unwrap_model(model)
                 torch.save(
-                    checkpoint_payload(_unwrap_model(model), optimizer, config, epoch, val_metrics),
+                    checkpoint_payload(model_to_save, optimizer, config, epoch, val_metrics),
                     run_dir / "last.pt",
                 )
                 if val_metrics["human_ap50"] > best_human_ap50:
                     best_human_ap50 = val_metrics["human_ap50"]
                     torch.save(
-                        checkpoint_payload(_unwrap_model(model), optimizer, config, epoch, val_metrics),
+                        checkpoint_payload(model_to_save, optimizer, config, epoch, val_metrics),
                         run_dir / "best.pt",
                     )
 

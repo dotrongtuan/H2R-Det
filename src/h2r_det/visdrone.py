@@ -368,12 +368,19 @@ def _default_label_path(image_path: Path) -> Path:
 
 
 class VisDroneYoloDataset(Dataset):
-    def __init__(self, images_root: str | Path, image_size: int | None = None, limit: int | None = None):
+    def __init__(
+        self,
+        images_root: str | Path,
+        image_size: int | None = None,
+        limit: int | None = None,
+        augment: bool = False,
+    ):
         self.images_root = Path(images_root).expanduser().resolve()
         self.images = _scan_images(self.images_root)
         if limit is not None:
             self.images = self.images[:limit]
         self.image_size = image_size
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.images)
@@ -415,6 +422,15 @@ class VisDroneYoloDataset(Dataset):
                 boxes_tensor[:, [0, 2]] *= scale_x
                 boxes_tensor[:, [1, 3]] *= scale_y
 
+        if self.augment and torch.rand(1).item() < 0.5:
+            image_tensor = torch.flip(image_tensor, dims=[2])
+            if boxes_tensor.numel():
+                width = float(image_tensor.shape[-1])
+                x1 = boxes_tensor[:, 0].clone()
+                x2 = boxes_tensor[:, 2].clone()
+                boxes_tensor[:, 0] = width - x2
+                boxes_tensor[:, 2] = width - x1
+
         return {
             "image": image_tensor,
             "boxes": boxes_tensor,
@@ -453,6 +469,8 @@ def build_visdrone_dataloader(
     if split_root is None:
         raise ValueError(f"Split '{split}' is not defined in {yaml_path}.")
     dataset = VisDroneYoloDataset(split_root, image_size=image_size, limit=limit)
+    if split == "train":
+        dataset.augment = True
     sampler = DistributedSampler(dataset, shuffle=shuffle) if distributed else None
     loader = DataLoader(
         dataset,

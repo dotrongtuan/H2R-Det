@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from h2r_det import H2RConfig, H2RDetector, H2RLoss, compute_map50, decode_predictions, mean_routed_area_fraction, routing_recall
-from h2r_det.utils import move_targets_to_device
+from h2r_det.utils import move_targets_to_device, promote_fp32_tree
 from h2r_det.visdrone import build_visdrone_dataloader
 
 
@@ -27,10 +27,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--scout-score-thresh", type=float, default=0.25)
-    parser.add_argument("--refine-score-thresh", type=float, default=0.25)
+    parser.add_argument("--scout-score-thresh", type=float, default=0.05)
+    parser.add_argument("--refine-score-thresh", type=float, default=0.1)
     parser.add_argument("--nms-iou", type=float, default=0.5)
-    parser.add_argument("--topk", type=int, default=150)
+    parser.add_argument("--topk", type=int, default=300)
     parser.add_argument("--save-json", type=str, default="")
     return parser.parse_args()
 
@@ -72,9 +72,10 @@ def main() -> None:
         images = images.to(device)
         targets = move_targets_to_device(targets, device)
         outputs = model(images)
-        losses = criterion(outputs, targets, image_size=(config.image_size, config.image_size))
+        outputs_fp32 = promote_fp32_tree(outputs)
+        losses = criterion(outputs_fp32, targets, image_size=(config.image_size, config.image_size))
         predictions = decode_predictions(
-            outputs,
+            outputs_fp32,
             config,
             image_size=(config.image_size, config.image_size),
             scout_score_thresh=args.scout_score_thresh,

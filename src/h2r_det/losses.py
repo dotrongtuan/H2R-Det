@@ -154,6 +154,19 @@ def match_routes_to_humans(
         best_idx = int(torch.argmin(distances).item())
         matched_box = candidate_boxes[best_idx]
         matched_label = int(candidate_labels[best_idx].item())
+
+        inter_x1 = torch.maximum(roi_target[1], matched_box[0])
+        inter_y1 = torch.maximum(roi_target[2], matched_box[1])
+        inter_x2 = torch.minimum(roi_target[3], matched_box[2])
+        inter_y2 = torch.minimum(roi_target[4], matched_box[3])
+        inter_w = (inter_x2 - inter_x1).clamp_min(0.0)
+        inter_h = (inter_y2 - inter_y1).clamp_min(0.0)
+        inter_area = inter_w * inter_h
+        box_area = ((matched_box[2] - matched_box[0]) * (matched_box[3] - matched_box[1])).clamp_min(1.0)
+        coverage = inter_area / box_area
+        if float(coverage.item()) < config.refine_positive_coverage:
+            continue
+
         objectness[route_idx, 0] = 1.0
         subclass_targets[route_idx] = config.human_class_ids.index(matched_label)
 
@@ -163,7 +176,7 @@ def match_routes_to_humans(
         cy = ((matched_box[1] + matched_box[3]) / 2.0 - roi_target[2]) / roi_h
         w = (matched_box[2] - matched_box[0]) / roi_w
         h = (matched_box[3] - matched_box[1]) / roi_h
-        box_targets[route_idx] = torch.stack([cx, cy, w, h])
+        box_targets[route_idx] = torch.stack([cx, cy, w, h]).clamp(0.0, 1.0)
 
     return objectness, subclass_targets, box_targets
 
@@ -256,6 +269,7 @@ class H2RLoss(nn.Module):
             + self.config.refine_box_weight * refine_box_loss
             + self.config.budget_loss_weight * budget_loss
         )
+        total = torch.nan_to_num(total, nan=float("inf"), posinf=float("inf"), neginf=float("inf"))
 
         return {
             "total": total,
