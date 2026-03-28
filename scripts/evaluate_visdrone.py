@@ -47,7 +47,17 @@ def main() -> None:
     config = H2RConfig(**checkpoint["config"])
 
     model = H2RDetector(config).to(device)
-    model.load_state_dict(checkpoint["model"])
+    load_result = model.load_state_dict(checkpoint["model"], strict=False)
+    if load_result.missing_keys or load_result.unexpected_keys:
+        print(
+            json.dumps(
+                {
+                    "event": "checkpoint_load_adjusted",
+                    "missing_keys": load_result.missing_keys,
+                    "unexpected_keys": load_result.unexpected_keys,
+                }
+            )
+        )
     criterion = H2RLoss(config)
     loader, _ = build_visdrone_dataloader(
         args.visdrone_yaml,

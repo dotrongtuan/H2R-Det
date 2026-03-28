@@ -74,19 +74,23 @@ class LightweightFPN(nn.Module):
 
 
 class RouteHead(nn.Module):
-    def __init__(self, channels: int):
+    def __init__(self, channels: int, use_uncertainty: bool = True):
         super().__init__()
         self.pre = ConvBNAct(channels, channels, 3)
         self.logits = nn.Conv2d(channels, 1, 1)
         self.scale = nn.Conv2d(channels, 1, 1)
-        self.uncertainty = nn.Conv2d(channels, 1, 1)
+        self.uncertainty = nn.Conv2d(channels, 1, 1) if use_uncertainty else None
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         hidden = self.pre(x)
+        if self.uncertainty is None:
+            uncertainty_logits = hidden.new_zeros((hidden.shape[0], 1, hidden.shape[2], hidden.shape[3]))
+        else:
+            uncertainty_logits = self.uncertainty(hidden)
         return {
             "human_logits": self.logits(hidden),
             "scale_logits": self.scale(hidden),
-            "uncertainty_logits": self.uncertainty(hidden),
+            "uncertainty_logits": uncertainty_logits,
         }
 
 
@@ -319,7 +323,7 @@ class H2RDetector(nn.Module):
         self.config = config
         self.backbone = TinyBackbone(config.backbone_channels)
         self.fpn = LightweightFPN(config.backbone_channels[1:], config.fpn_channels)
-        self.route_head = RouteHead(config.fpn_channels)
+        self.route_head = RouteHead(config.fpn_channels, use_uncertainty=config.use_route_uncertainty)
         self.scout_head = ScoutHead(config.fpn_channels, config.num_classes)
         self.router = HumanAwareRouter(config)
         self.patch_expert = PatchExpert(3, config.refine_channels, config.human_subclasses, config.refine_dropout)
