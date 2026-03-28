@@ -65,6 +65,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topk", type=int, default=300)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True, help="Enable AMP on CUDA.")
     parser.add_argument("--log-interval", type=int, default=100)
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        help="Stop after this many validation epochs without improvement. 0 disables early stopping.",
+    )
+    parser.add_argument("--early-stop-min-delta", type=float, default=0.0)
+    parser.add_argument("--early-stop-metric", type=str, default="human_ap50", choices=("human_ap50", "map50", "loss"))
+    parser.add_argument("--min-epochs", type=int, default=0, help="Do not early-stop before this epoch.")
     return parser.parse_args()
 
 
@@ -109,6 +118,14 @@ def _build_scheduler(optimizer: AdamW, epochs: int, config: H2RConfig) -> Lambda
         return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
 
     return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
+def _metric_improved(metric_name: str, current: float, best: float, min_delta: float) -> bool:
+    if math.isinf(best):
+        return True
+    if metric_name == "loss":
+        return current < (best - min_delta)
+    return current > (best + min_delta)
 
 
 def train_one_epoch(
@@ -356,6 +373,9 @@ def main() -> None:
             )
 
         best_human_ap50 = float("-inf")
+        early_stop_metric = args.early_stop_metric
+        best_stop_metric = float("inf") if early_stop_metric == "loss" else float("-inf")
+        epochs_without_improvement = 0
         history: list[dict[str, float | int]] = []
 
         for epoch in range(1, args.epochs + 1):
@@ -382,6 +402,7 @@ def main() -> None:
                 assert val_loader is not None
                 eval_model = ema.ema if ema is not None else _unwrap_model(model)
                 val_metrics = evaluate(eval_model, criterion, val_loader, device, config, args)
+                stop_metric_value = float(val_metrics[early_stop_metric])
                 row = {
                     "epoch": epoch,
                     "lr": float(optimizer.param_groups[0]["lr"]),
@@ -398,12 +419,56 @@ def main() -> None:
                 )
                 if val_metrics["human_ap50"] > best_human_ap50:
                     best_human_ap50 = val_metrics["human_ap50"]
+                if _metric_improved(early_stop_metric, stop_metric_value, best_stop_metric, args.early_stop_min_delta):
+                    best_stop_metric = stop_metric_value
+                    epochs_without_improvement = 0
                     torch.save(
                         checkpoint_payload(model_to_save, optimizer, config, epoch, val_metrics),
                         run_dir / "best.pt",
                     )
+                else:
+                    epochs_without_improvement += 1
 
-                write_json(run_dir / "history.json", {"history": history, "best_human_ap50": best_human_ap50})
+                write_json(
+                    run_dir / "history.json",
+                    {
+                        "history": history,
+                        "best_human_ap50": best_human_ap50,
+                        "early_stop_metric": early_stop_metric,
+                        "best_early_stop_metric": best_stop_metric,
+                        "epochs_without_improvement": epochs_without_improvement,
+                    },
+                )
+
+                stop_training = (
+                    args.early_stop_patience > 0
+                    and epoch >= max(1, args.min_epochs)
+                    and epochs_without_improvement >= args.early_stop_patience
+                )
+                if stop_training:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "early_stop",
+                                "epoch": epoch,
+                                "metric": early_stop_metric,
+                                "best_metric": best_stop_metric,
+                                "epochs_without_improvement": epochs_without_improvement,
+                                "patience": args.early_stop_patience,
+                                "min_delta": args.early_stop_min_delta,
+                            }
+                        )
+                    )
+            else:
+                stop_training = False
+
+            if is_distributed():
+                stop_tensor = torch.tensor([1 if stop_training else 0], device=device, dtype=torch.int32)
+                dist.broadcast(stop_tensor, src=0)
+                stop_training = bool(stop_tensor.item())
+
+            if stop_training:
+                break
 
             _dist_barrier(local_rank, device)
     finally:

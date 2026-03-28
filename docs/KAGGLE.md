@@ -136,6 +136,9 @@ Recommended starting point for 2x T4:
 - `--patch-size 96`
 - `--max-routes 24`
 - `--amp` enabled by default
+- `--early-stop-patience 4`
+- `--early-stop-min-delta 0.0005`
+- `--min-epochs 10`
 
 Train:
 
@@ -147,6 +150,9 @@ Train:
   --image-size 640 \
   --patch-size 96 \
   --max-routes 24 \
+  --early-stop-patience 4 \
+  --early-stop-min-delta 0.0005 \
+  --min-epochs 10 \
   --device cuda \
   --output-dir /kaggle/working/runs \
   --run-name visdrone_h2r
@@ -220,6 +226,9 @@ torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
   --image-size 640 \
   --patch-size 96 \
   --max-routes 24 \
+  --early-stop-patience 4 \
+  --early-stop-min-delta 0.0005 \
+  --min-epochs 10 \
   --device cuda \
   --log-interval 100 \
   --output-dir /kaggle/working/runs \
@@ -237,6 +246,9 @@ if [ "$TRAIN_STATUS" -ne 0 ]; then
     --image-size 640 \
     --patch-size 96 \
     --max-routes 24 \
+    --early-stop-patience 4 \
+    --early-stop-min-delta 0.0005 \
+    --min-epochs 10 \
     --device cuda \
     --no-amp \
     --log-interval 100 \
