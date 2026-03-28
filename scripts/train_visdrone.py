@@ -64,6 +64,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nms-iou", type=float, default=0.5)
     parser.add_argument("--topk", type=int, default=300)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True, help="Enable AMP on CUDA.")
+    parser.add_argument(
+        "--find-unused-parameters",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable DDP find_unused_parameters. Keep disabled unless you hit a DDP hang from dynamic branches.",
+    )
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument(
         "--early-stop-patience",
@@ -335,7 +341,7 @@ def main() -> None:
             model = DDP(
                 base_model,
                 device_ids=[local_rank] if device.type == "cuda" else None,
-                find_unused_parameters=True,
+                find_unused_parameters=args.find_unused_parameters,
             )
 
         criterion = H2RLoss(config)

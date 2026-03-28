@@ -303,5 +303,6 @@ After the notebook finishes, download from `/kaggle/working/`:
 - Reduce `--batch-size` before reducing `--max-routes`.
 - Use `--limit-train` and `--limit-val` first to verify paths and labels.
 - If the VisDrone Kaggle dataset is already mounted, `--visdrone-yaml VisDrone.yaml` should now find it automatically.
+- `find_unused_parameters` is now disabled by default for DDP to avoid extra overhead; only turn it on if you hit a true dynamic-graph DDP hang.
 - The repo currently reports `AP50 proxy`, not the official VisDrone evaluation server metric.
 - `torchrun` examples here are for Kaggle Linux. Local Windows testing may need different rendezvous settings.
