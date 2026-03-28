@@ -130,11 +130,11 @@ If this goes out of memory, reduce `--batch-size` from `4` to `2` before touchin
 
 Recommended starting point for 2x T4:
 
-- `--batch-size 4` per GPU
-- global batch size = `8`
+- `--batch-size 2` per GPU
+- global batch size = `4`
 - `--image-size 640`
 - `--patch-size 96`
-- `--max-routes 12`
+- `--max-routes 24`
 - `--amp` enabled by default
 
 Train:
@@ -143,10 +143,10 @@ Train:
 !torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
   --visdrone-yaml VisDrone.yaml \
   --epochs 20 \
-  --batch-size 4 \
+  --batch-size 2 \
   --image-size 640 \
   --patch-size 96 \
-  --max-routes 12 \
+  --max-routes 24 \
   --device cuda \
   --output-dir /kaggle/working/runs \
   --run-name visdrone_h2r
@@ -159,23 +159,133 @@ Then evaluate:
   --checkpoint /kaggle/working/runs/visdrone_h2r/best.pt \
   --visdrone-yaml VisDrone.yaml \
   --split val \
-  --batch-size 4 \
+  --batch-size 2 \
   --device cuda \
   --save-json /kaggle/working/visdrone_eval.json
 ```
 
-## 8. Download Artifacts
+## 8. One-Cell Full Pipeline With Fallback
+
+If you want a single Kaggle cell that:
+
+- clone or pull the repo
+- install the package
+- log `nvidia-smi`
+- train with AMP first
+- automatically retry with `--no-amp` if the AMP run fails
+- evaluate the best checkpoint
+- pack the artifacts into one tarball
+
+use:
+
+```bash
+%%bash
+set -euo pipefail
+
+REPO_DIR="/kaggle/working/h2r-det"
+RUN_NAME="visdrone_h2r_full"
+RUN_DIR="/kaggle/working/runs/${RUN_NAME}"
+EVAL_JSON="/kaggle/working/${RUN_NAME}_eval.json"
+ARTIFACT_TAR="/kaggle/working/${RUN_NAME}_artifacts.tar.gz"
+SMI_LOG="/kaggle/working/${RUN_NAME}_nvidia_smi.txt"
+
+cd /kaggle/working
+
+if [ ! -d "$REPO_DIR" ]; then
+  git clone https://github.com/dotrongtuan/H2R-Det.git h2r-det
+else
+  cd "$REPO_DIR"
+  git pull
+fi
+
+cd "$REPO_DIR"
+python -m pip install -e . --no-deps
+
+python - <<'PY'
+import torch
+print("torch =", torch.__version__)
+print("cuda =", torch.cuda.is_available())
+print("gpu_count =", torch.cuda.device_count())
+PY
+
+nvidia-smi | tee "$SMI_LOG"
+
+mkdir -p /kaggle/working/runs
+
+set +e
+torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
+  --visdrone-yaml VisDrone.yaml \
+  --epochs 20 \
+  --batch-size 2 \
+  --image-size 640 \
+  --patch-size 96 \
+  --max-routes 24 \
+  --device cuda \
+  --log-interval 100 \
+  --output-dir /kaggle/working/runs \
+  --run-name "${RUN_NAME}"
+TRAIN_STATUS=$?
+set -e
+
+if [ "$TRAIN_STATUS" -ne 0 ]; then
+  echo "AMP run failed, retrying with --no-amp"
+  rm -rf "$RUN_DIR"
+  torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
+    --visdrone-yaml VisDrone.yaml \
+    --epochs 20 \
+    --batch-size 2 \
+    --image-size 640 \
+    --patch-size 96 \
+    --max-routes 24 \
+    --device cuda \
+    --no-amp \
+    --log-interval 100 \
+    --output-dir /kaggle/working/runs \
+    --run-name "${RUN_NAME}"
+fi
+
+python scripts/evaluate_visdrone.py \
+  --checkpoint "${RUN_DIR}/best.pt" \
+  --visdrone-yaml VisDrone.yaml \
+  --split val \
+  --batch-size 2 \
+  --device cuda \
+  --save-json "${EVAL_JSON}"
+
+tar -czf "${ARTIFACT_TAR}" \
+  -C /kaggle/working \
+  "runs/${RUN_NAME}" \
+  "$(basename "${EVAL_JSON}")" \
+  "$(basename "${SMI_LOG}")"
+
+echo
+echo "Done."
+echo "Run dir: ${RUN_DIR}"
+echo "Eval json: ${EVAL_JSON}"
+echo "Artifact tar: ${ARTIFACT_TAR}"
+ls -lah "${RUN_DIR}"
+cat "${EVAL_JSON}"
+```
+
+Notes:
+
+- this cell assumes the Kaggle notebook has access to `git clone`
+- if VisDrone is not mounted under `/kaggle/input`, built-in alias mode may need Internet access to auto-download the dataset
+- if the AMP run fails for any reason, the cell retries from scratch with `--no-amp`
+
+## 9. Download Artifacts
 
 After the notebook finishes, download from `/kaggle/working/`:
 
-- `runs/visdrone_h2r/best.pt`
-- `runs/visdrone_h2r/last.pt`
-- `runs/visdrone_h2r/history.json`
-- `visdrone_eval.json`
+- `runs/<run_name>/best.pt`
+- `runs/<run_name>/last.pt`
+- `runs/<run_name>/history.json`
+- `<run_name>_eval.json`
+- `<run_name>_artifacts.tar.gz`
 
 ## Practical Notes
 
-- On 2x T4, start with `--batch-size 4` per GPU at `640`.
+- On 2x T4, start with `--batch-size 2` per GPU at `640`.
 - If you hit OOM, move to `--batch-size 2` per GPU before reducing `--image-size`.
 - Start with `--image-size 512` only if `640` is still too heavy.
 - Reduce `--batch-size` before reducing `--max-routes`.
