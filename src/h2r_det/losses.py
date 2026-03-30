@@ -282,12 +282,12 @@ class H2RLoss(nn.Module):
                     refine_box_targets[positive_mask],
                 )
             else:
-                refine_cls_loss = route_loss.new_tensor(0.0)
-                refine_box_loss = route_loss.new_tensor(0.0)
+                refine_cls_loss = refine["class_logits"].sum() * 0.0
+                refine_box_loss = refine["box"].sum() * 0.0
         else:
-            refine_obj_loss = route_loss.new_tensor(0.0)
-            refine_cls_loss = route_loss.new_tensor(0.0)
-            refine_box_loss = route_loss.new_tensor(0.0)
+            refine_obj_loss = refine["objectness_logits"].sum() * 0.0
+            refine_cls_loss = refine["class_logits"].sum() * 0.0
+            refine_box_loss = refine["box"].sum() * 0.0
 
         if routes.predicted_rois.numel():
             roi_areas = (routes.predicted_rois[:, 3] - routes.predicted_rois[:, 1]) * (
