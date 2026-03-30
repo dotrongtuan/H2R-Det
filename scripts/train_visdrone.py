@@ -109,6 +109,14 @@ def _reduce_mean(value: float, device: torch.device) -> float:
     return float(tensor.item())
 
 
+def _all_ranks_true(flag: bool, device: torch.device) -> bool:
+    if not dist.is_initialized():
+        return flag
+    tensor = torch.tensor([1 if flag else 0], device=device, dtype=torch.int32)
+    dist.all_reduce(tensor, op=dist.ReduceOp.MIN)
+    return bool(tensor.item())
+
+
 def _build_scheduler(optimizer: AdamW, epochs: int, config: H2RConfig) -> LambdaLR:
     warmup_epochs = max(0, config.warmup_epochs)
     min_lr_ratio = float(config.min_lr_ratio)
@@ -171,7 +179,8 @@ def train_one_epoch(
             image_size=(config.image_size, config.image_size),
         )
 
-        if not torch.isfinite(losses["total"]):
+        loss_is_finite = _all_ranks_true(bool(torch.isfinite(losses["total"]).item()), device)
+        if not loss_is_finite:
             optimizer.zero_grad(set_to_none=True)
             skipped_batches += 1
             continue
@@ -180,7 +189,8 @@ def train_one_epoch(
         scaler.scale(losses["total"]).backward()
         scaler.unscale_(optimizer)
         grad_norm = clip_grad_norm_(model.parameters(), max_norm=config.grad_clip_norm)
-        if not torch.isfinite(torch.as_tensor(grad_norm)):
+        grad_is_finite = _all_ranks_true(bool(torch.isfinite(torch.as_tensor(grad_norm)).item()), device)
+        if not grad_is_finite:
             optimizer.zero_grad(set_to_none=True)
             scaler.update()
             skipped_batches += 1
