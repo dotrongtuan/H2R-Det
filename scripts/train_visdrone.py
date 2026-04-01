@@ -389,6 +389,7 @@ def main() -> None:
             )
 
         best_human_ap50 = float("-inf")
+        best_human_ap50_epoch = -1
         early_stop_metric = args.early_stop_metric
         best_stop_metric = float("inf") if early_stop_metric == "loss" else float("-inf")
         epochs_without_improvement = 0
@@ -435,13 +436,14 @@ def main() -> None:
                 )
                 if val_metrics["human_ap50"] > best_human_ap50:
                     best_human_ap50 = val_metrics["human_ap50"]
-                if _metric_improved(early_stop_metric, stop_metric_value, best_stop_metric, args.early_stop_min_delta):
-                    best_stop_metric = stop_metric_value
-                    epochs_without_improvement = 0
+                    best_human_ap50_epoch = epoch
                     torch.save(
                         checkpoint_payload(model_to_save, optimizer, config, epoch, val_metrics),
                         run_dir / "best.pt",
                     )
+                if _metric_improved(early_stop_metric, stop_metric_value, best_stop_metric, args.early_stop_min_delta):
+                    best_stop_metric = stop_metric_value
+                    epochs_without_improvement = 0
                 else:
                     epochs_without_improvement += 1
 
@@ -450,6 +452,7 @@ def main() -> None:
                     {
                         "history": history,
                         "best_human_ap50": best_human_ap50,
+                        "best_human_ap50_epoch": best_human_ap50_epoch,
                         "early_stop_metric": early_stop_metric,
                         "best_early_stop_metric": best_stop_metric,
                         "epochs_without_improvement": epochs_without_improvement,
@@ -492,6 +495,7 @@ def main() -> None:
 
     if is_main_process():
         print(f"Best human AP50: {best_human_ap50:.4f}")
+        print(f"Best human AP50 epoch: {best_human_ap50_epoch}")
         print(f"Artifacts written to: {run_dir}")
 
 
