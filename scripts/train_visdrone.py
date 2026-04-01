@@ -43,8 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train H2R-Det on a VisDrone YAML split.")
     parser.add_argument("--visdrone-yaml", type=str, required=True)
     parser.add_argument("--dataset-root", type=str, default="")
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=4, help="Per-process batch size. Global batch = batch_size * world_size.")
+    parser.add_argument("--epochs", type=int, default=40)
+    parser.add_argument("--batch-size", type=int, default=2, help="Per-process batch size. Global batch = batch_size * world_size.")
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--image-size", type=int, default=defaults.image_size)
     parser.add_argument("--patch-size", type=int, default=defaults.patch_size)
@@ -74,12 +74,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--early-stop-patience",
         type=int,
-        default=0,
+        default=6,
         help="Stop after this many validation epochs without improvement. 0 disables early stopping.",
     )
-    parser.add_argument("--early-stop-min-delta", type=float, default=0.0)
+    parser.add_argument("--early-stop-min-delta", type=float, default=2e-4)
     parser.add_argument("--early-stop-metric", type=str, default="human_ap50", choices=("human_ap50", "map50", "loss"))
-    parser.add_argument("--min-epochs", type=int, default=0, help="Do not early-stop before this epoch.")
+    parser.add_argument("--min-epochs", type=int, default=12, help="Do not early-stop before this epoch.")
     return parser.parse_args()
 
 
@@ -383,6 +383,11 @@ def main() -> None:
                         "global_batch_size": args.batch_size * world_size,
                         "amp": use_amp,
                         "base_lr": config.learning_rate,
+                        "max_routes": config.max_routes,
+                        "early_stop_metric": args.early_stop_metric,
+                        "early_stop_patience": args.early_stop_patience,
+                        "early_stop_min_delta": args.early_stop_min_delta,
+                        "min_epochs": args.min_epochs,
                         "run_dir": str(run_dir),
                     }
                 )

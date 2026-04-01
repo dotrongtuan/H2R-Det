@@ -24,7 +24,7 @@ class H2RConfig:
     human_class_ids: tuple[int, int] = (0, 1)
     image_size: int = 640
     patch_size: int = 96
-    max_routes: int = 24
+    max_routes: int = 32
     route_stride: int = 4
     route_min_size: int = 32
     route_max_size: int = 192

@@ -134,25 +134,27 @@ Recommended starting point for 2x T4:
 - global batch size = `4`
 - `--image-size 640`
 - `--patch-size 96`
-- `--max-routes 24`
+- `--max-routes 32`
 - `--amp` enabled by default
-- `--early-stop-patience 4`
-- `--early-stop-min-delta 0.0005`
-- `--min-epochs 10`
+- `--early-stop-patience 6`
+- `--early-stop-min-delta 0.0002`
+- `--min-epochs 12`
+
+These values now match the training script defaults, so you can omit them unless you want to override them.
 
 Train:
 
 ```bash
 !torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
   --visdrone-yaml VisDrone.yaml \
-  --epochs 20 \
+  --epochs 40 \
   --batch-size 2 \
   --image-size 640 \
   --patch-size 96 \
-  --max-routes 24 \
-  --early-stop-patience 4 \
-  --early-stop-min-delta 0.0005 \
-  --min-epochs 10 \
+  --max-routes 32 \
+  --early-stop-patience 6 \
+  --early-stop-min-delta 0.0002 \
+  --min-epochs 12 \
   --device cuda \
   --output-dir /kaggle/working/runs \
   --run-name visdrone_h2r
@@ -221,14 +223,14 @@ mkdir -p /kaggle/working/runs
 set +e
 torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
   --visdrone-yaml VisDrone.yaml \
-  --epochs 20 \
+  --epochs 40 \
   --batch-size 2 \
   --image-size 640 \
   --patch-size 96 \
-  --max-routes 24 \
-  --early-stop-patience 4 \
-  --early-stop-min-delta 0.0005 \
-  --min-epochs 10 \
+  --max-routes 32 \
+  --early-stop-patience 6 \
+  --early-stop-min-delta 0.0002 \
+  --min-epochs 12 \
   --device cuda \
   --log-interval 100 \
   --output-dir /kaggle/working/runs \
@@ -241,14 +243,14 @@ if [ "$TRAIN_STATUS" -ne 0 ]; then
   rm -rf "$RUN_DIR"
   torchrun --standalone --nproc_per_node=2 scripts/train_visdrone.py \
     --visdrone-yaml VisDrone.yaml \
-    --epochs 20 \
+    --epochs 40 \
     --batch-size 2 \
     --image-size 640 \
     --patch-size 96 \
-    --max-routes 24 \
-    --early-stop-patience 4 \
-    --early-stop-min-delta 0.0005 \
-    --min-epochs 10 \
+    --max-routes 32 \
+    --early-stop-patience 6 \
+    --early-stop-min-delta 0.0002 \
+    --min-epochs 12 \
     --device cuda \
     --no-amp \
     --log-interval 100 \
