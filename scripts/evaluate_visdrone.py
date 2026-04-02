@@ -12,9 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from h2r_det import H2RConfig, H2RDetector, H2RLoss, compute_map50, decode_predictions, mean_routed_area_fraction, routing_recall
-from h2r_det.utils import move_targets_to_device, promote_fp32_tree
-from h2r_det.visdrone import build_visdrone_dataloader
+from h2r_det.reporting import generate_evaluation_report
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,93 +29,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refine-score-thresh", type=float, default=0.1)
     parser.add_argument("--nms-iou", type=float, default=0.5)
     parser.add_argument("--topk", type=int, default=300)
+    parser.add_argument("--output-dir", type=str, default="")
+    parser.add_argument("--history-json", type=str, default="")
+    parser.add_argument("--num-examples", type=int, default=12)
     parser.add_argument("--save-json", type=str, default="")
     return parser.parse_args()
-
-
-def _cpu_batch(items: list[dict[str, torch.Tensor]]) -> list[dict[str, torch.Tensor]]:
-    return [{key: value.detach().cpu() for key, value in item.items()} for item in items]
 
 
 @torch.no_grad()
 def main() -> None:
     args = parse_args()
-    device = torch.device(args.device)
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    config = H2RConfig(**checkpoint["config"])
-
-    model = H2RDetector(config).to(device)
-    load_result = model.load_state_dict(checkpoint["model"], strict=False)
-    if load_result.missing_keys or load_result.unexpected_keys:
-        print(
-            json.dumps(
-                {
-                    "event": "checkpoint_load_adjusted",
-                    "missing_keys": load_result.missing_keys,
-                    "unexpected_keys": load_result.unexpected_keys,
-                }
-            )
-        )
-    criterion = H2RLoss(config)
-    loader, _ = build_visdrone_dataloader(
-        args.visdrone_yaml,
+    checkpoint_path = Path(args.checkpoint).expanduser().resolve()
+    output_dir = args.output_dir or str(checkpoint_path.parent / f"{checkpoint_path.stem}_{args.split}_report")
+    history_json = args.history_json or str(checkpoint_path.parent / "history.json")
+    report = generate_evaluation_report(
+        checkpoint_path=checkpoint_path,
+        visdrone_yaml=args.visdrone_yaml,
+        dataset_root=args.dataset_root or None,
         split=args.split,
-        image_size=config.image_size,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        shuffle=False,
+        device=args.device,
         limit=args.limit or None,
-        override_root=args.dataset_root or None,
+        scout_score_thresh=args.scout_score_thresh,
+        refine_score_thresh=args.refine_score_thresh,
+        nms_iou=args.nms_iou,
+        topk=args.topk,
+        output_dir=output_dir,
+        history_path=history_json if Path(history_json).exists() else None,
+        num_examples=args.num_examples,
+        save_json_path=args.save_json or None,
     )
-
-    model.eval()
-    total_loss = 0.0
-    total_route_recall = 0.0
-    total_area = 0.0
-    total_routes_per_image = 0.0
-    batches = 0
-    predictions_all: list[dict[str, torch.Tensor]] = []
-    targets_all: list[dict[str, torch.Tensor]] = []
-
-    for images, targets in loader:
-        images = images.to(device)
-        targets = move_targets_to_device(targets, device)
-        outputs = model(images)
-        outputs_fp32 = promote_fp32_tree(outputs)
-        losses = criterion(outputs_fp32, targets, image_size=(config.image_size, config.image_size))
-        predictions = decode_predictions(
-            outputs_fp32,
-            config,
-            image_size=(config.image_size, config.image_size),
-            scout_score_thresh=args.scout_score_thresh,
-            refine_score_thresh=args.refine_score_thresh,
-            topk=args.topk,
-            nms_iou=args.nms_iou,
-        )
-        predictions_all.extend(_cpu_batch(predictions))
-        targets_all.extend(_cpu_batch(targets))
-        total_loss += float(losses["total"].item())
-        total_route_recall += routing_recall(config, outputs["routes"], targets)
-        total_area += mean_routed_area_fraction(outputs["routes"], (config.image_size, config.image_size))
-        total_routes_per_image += outputs["routes"].predicted_count / max(1, images.shape[0])
-        batches += 1
-
-    metrics = compute_map50(predictions_all, targets_all, config.num_classes)
-    human_ap = sum(metrics["ap50_per_class"][idx] for idx in config.human_class_ids) / len(config.human_class_ids)
-    summary = {
-        "loss": total_loss / max(1, batches),
-        "route_recall": total_route_recall / max(1, batches),
-        "routed_area": total_area / max(1, batches),
-        "routes_per_image": total_routes_per_image / max(1, batches),
-        "map50": float(metrics["map50"]),
-        "human_ap50": float(human_ap),
-        "ap50_per_class": metrics["ap50_per_class"],
-        "checkpoint_epoch": checkpoint.get("epoch", -1),
-    }
-    print(json.dumps(summary, indent=2))
-
-    if args.save_json:
-        Path(args.save_json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(json.dumps(report["summary"], indent=2))
+    print(json.dumps({"event": "report_written", "output_dir": report["output_dir"], "archive_path": report["archive_path"]}))
 
 
 if __name__ == "__main__":

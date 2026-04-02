@@ -21,6 +21,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from h2r_det import H2RConfig, H2RDetector, H2RLoss, compute_map50, decode_predictions, mean_routed_area_fraction, routing_recall
+from h2r_det.reporting import generate_evaluation_report
 from h2r_det.utils import (
     ModelEMA,
     checkpoint_payload,
@@ -80,6 +81,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--early-stop-min-delta", type=float, default=2e-4)
     parser.add_argument("--early-stop-metric", type=str, default="human_ap50", choices=("human_ap50", "map50", "loss"))
     parser.add_argument("--min-epochs", type=int, default=12, help="Do not early-stop before this epoch.")
+    parser.add_argument(
+        "--final-report",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="After training, validate best.pt and export evaluation artifacts automatically.",
+    )
+    parser.add_argument("--final-report-examples", type=int, default=12)
+    parser.add_argument("--final-report-output", type=str, default="")
     return parser.parse_args()
 
 
@@ -293,6 +302,8 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     device, rank, world_size, local_rank = init_distributed(args.device)
+    final_report_result: dict[str, object] | None = None
+    final_report_error: str | None = None
     try:
         dataset_root = args.dataset_root or None
         use_amp = bool(args.amp and device.type == "cuda")
@@ -388,6 +399,8 @@ def main() -> None:
                         "early_stop_patience": args.early_stop_patience,
                         "early_stop_min_delta": args.early_stop_min_delta,
                         "min_epochs": args.min_epochs,
+                        "final_report": args.final_report,
+                        "final_report_examples": args.final_report_examples,
                         "run_dir": str(run_dir),
                     }
                 )
@@ -499,6 +512,40 @@ def main() -> None:
         cleanup_distributed()
 
     if is_main_process():
+        best_checkpoint = run_dir / "best.pt"
+        if args.final_report and best_checkpoint.exists():
+            report_dir = Path(args.final_report_output) if args.final_report_output else run_dir / "best_report"
+            try:
+                final_report_result = generate_evaluation_report(
+                    checkpoint_path=best_checkpoint,
+                    visdrone_yaml=args.visdrone_yaml,
+                    dataset_root=dataset_root,
+                    split=args.val_split,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    device=device,
+                    limit=args.limit_val or None,
+                    scout_score_thresh=args.scout_score_thresh,
+                    refine_score_thresh=args.refine_score_thresh,
+                    nms_iou=args.nms_iou,
+                    topk=args.topk,
+                    output_dir=report_dir,
+                    history_path=run_dir / "history.json",
+                    num_examples=args.final_report_examples,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "event": "final_report_written",
+                            "output_dir": final_report_result["output_dir"],
+                            "archive_path": final_report_result["archive_path"],
+                            "summary_path": final_report_result["summary_path"],
+                        }
+                    )
+                )
+            except Exception as exc:
+                final_report_error = str(exc)
+                print(json.dumps({"event": "final_report_failed", "error": final_report_error}))
         print(f"Best human AP50: {best_human_ap50:.4f}")
         print(f"Best human AP50 epoch: {best_human_ap50_epoch}")
         print(f"Artifacts written to: {run_dir}")

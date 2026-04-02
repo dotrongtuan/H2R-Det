@@ -160,6 +160,22 @@ Train:
   --run-name visdrone_h2r
 ```
 
+After training finishes, the script now also evaluates `best.pt` automatically on the validation split and writes a full report to:
+
+```bash
+/kaggle/working/runs/visdrone_h2r/best_report
+```
+
+That report includes:
+
+- `summary.json` and `summary.csv`
+- `per_class_metrics.csv` and `per_class_metrics.md`
+- `per_image_metrics.csv`
+- `confusion_matrix.csv`
+- `plots/` with training curves, per-class AP50, human PR curves, and a confusion-matrix image
+- `examples/` with qualitative visualizations for strong and weak cases
+- a zipped archive alongside the report directory
+
 Then evaluate:
 
 ```bash
